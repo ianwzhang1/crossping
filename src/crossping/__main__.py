@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .app import CrossPingApp
+from crossping.app import CrossPingApp
 
 
 def main() -> int:

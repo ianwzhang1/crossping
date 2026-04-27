@@ -15,14 +15,29 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
+        id: setup-python
         uses: actions/setup-python@v5
         with:
           python-version: "3.9"
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('Pipfile.lock', 'pyproject.toml', '.github/workflows/windows-build.yml') }}
+
+      - name: Cache pipenv virtualenv
+        id: cache-venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('Pipfile.lock', 'pyproject.toml', 'packaging/crossping.spec', '.github/workflows/windows-build.yml') }}
 
       - name: Install pipenv
         run: python -m pip install --upgrade pip pipenv
 
       - name: Install project dependencies
+        if: steps.cache-venv.outputs.cache-hit != 'true'
         env:
           PIPENV_VENV_IN_PROJECT: "1"
         run: |
