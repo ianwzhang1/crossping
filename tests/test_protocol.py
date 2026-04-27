@@ -1,4 +1,5 @@
 from crossping.protocol import (
+    ClearAllMessage,
     ClearSenderMessage,
     PingMessage,
     StrokeEndMessage,
@@ -19,9 +20,10 @@ def test_topic_for_room() -> None:
 def test_message_encode_decode() -> None:
     messages = [
         StrokeStartMessage.build("sender", "stroke"),
-        StrokePointMessage.build("sender", "stroke", 1.5, -0.2),
+        StrokePointMessage.build("sender", "stroke", 1.5, -0.2, color="#24c8ff"),
         StrokeEndMessage.build("sender", "stroke"),
         ClearSenderMessage.build("sender"),
+        ClearAllMessage.build("sender"),
         PingMessage.build("sender", 0.25, 0.75, color="#24c8ff"),
     ]
     decoded = [decode_message(message.encode()) for message in messages]
@@ -30,13 +32,15 @@ def test_message_encode_decode() -> None:
         "stroke_point",
         "stroke_end",
         "clear_sender",
+        "clear_all",
         "ping",
     ]
     assert decoded[1]["x"] == 1.0
     assert decoded[1]["y"] == 0.0
-    assert decoded[4]["x"] == 0.25
-    assert decoded[4]["y"] == 0.75
-    assert decoded[4]["color"] == "#24c8ff"
+    assert decoded[1]["color"] == "#24c8ff"
+    assert decoded[5]["x"] == 0.25
+    assert decoded[5]["y"] == 0.75
+    assert decoded[5]["color"] == "#24c8ff"
 
 
 def test_normalize_and_denormalize_bounds() -> None:

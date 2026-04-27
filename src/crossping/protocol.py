@@ -54,10 +54,11 @@ class StrokePointMessage(BaseMessage):
     stroke_id: str
     x: float
     y: float
+    color: str = "#ff3366"
 
     @classmethod
-    def build(cls, sender_id: str, stroke_id: str, x: float, y: float) -> "StrokePointMessage":
-        return cls(type="stroke_point", sender_id=sender_id, timestamp=time.time(), stroke_id=stroke_id, x=clamp_normalized(x), y=clamp_normalized(y))
+    def build(cls, sender_id: str, stroke_id: str, x: float, y: float, color: str = "#ff3366") -> "StrokePointMessage":
+        return cls(type="stroke_point", sender_id=sender_id, timestamp=time.time(), stroke_id=stroke_id, x=clamp_normalized(x), y=clamp_normalized(y), color=color)
 
 
 @dataclass
@@ -77,6 +78,53 @@ class ClearSenderMessage(BaseMessage):
 
 
 @dataclass
+class ClearAllMessage(BaseMessage):
+    @classmethod
+    def build(cls, sender_id: str) -> "ClearAllMessage":
+        return cls(type="clear_all", sender_id=sender_id, timestamp=time.time())
+
+
+@dataclass
+class TextStartMessage(BaseMessage):
+    text_id: str
+    x: float
+    y: float
+    color: str = "#ff3366"
+
+    @classmethod
+    def build(cls, sender_id: str, text_id: str, x: float, y: float, color: str = "#ff3366") -> "TextStartMessage":
+        return cls(
+            type="text_start",
+            sender_id=sender_id,
+            timestamp=time.time(),
+            text_id=text_id,
+            x=clamp_normalized(x),
+            y=clamp_normalized(y),
+            color=color,
+        )
+
+
+@dataclass
+class TextUpdateMessage(BaseMessage):
+    text_id: str
+    text: str
+    color: str = "#ff3366"
+
+    @classmethod
+    def build(cls, sender_id: str, text_id: str, text: str, color: str = "#ff3366") -> "TextUpdateMessage":
+        return cls(type="text_update", sender_id=sender_id, timestamp=time.time(), text_id=text_id, text=text, color=color)
+
+
+@dataclass
+class TextEndMessage(BaseMessage):
+    text_id: str
+
+    @classmethod
+    def build(cls, sender_id: str, text_id: str) -> "TextEndMessage":
+        return cls(type="text_end", sender_id=sender_id, timestamp=time.time(), text_id=text_id)
+
+
+@dataclass
 class PingMessage(BaseMessage):
     x: float
     y: float
@@ -87,7 +135,17 @@ class PingMessage(BaseMessage):
         return cls(type="ping", sender_id=sender_id, timestamp=time.time(), x=clamp_normalized(x), y=clamp_normalized(y), color=color)
 
 
-Message = Union[StrokeStartMessage, StrokePointMessage, StrokeEndMessage, ClearSenderMessage, PingMessage]
+Message = Union[
+    StrokeStartMessage,
+    StrokePointMessage,
+    StrokeEndMessage,
+    ClearSenderMessage,
+    ClearAllMessage,
+    TextStartMessage,
+    TextUpdateMessage,
+    TextEndMessage,
+    PingMessage,
+]
 
 
 def decode_message(payload: Union[str, bytes]) -> Dict[str, object]:

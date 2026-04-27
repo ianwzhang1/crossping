@@ -184,6 +184,26 @@ if QtWidgets is not None:
             height = max(1, self.height())
             if self.draw_mode_active:
                 painter.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 1))
+            for stroke in self.store.all_strokes():
+                if not stroke.points:
+                    continue
+                pen = QtGui.QPen(QtGui.QColor(stroke.color))
+                pen.setWidthF(stroke.width)
+                pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+                pen.setJoinStyle(QtCore.Qt.PenJoinStyle.RoundJoin)
+                painter.setPen(pen)
+                painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+                if len(stroke.points) == 1:
+                    px, py = denormalize_point(stroke.points[0][0], stroke.points[0][1], width, height)
+                    painter.drawPoint(QtCore.QPointF(px, py))
+                    continue
+                path = QtGui.QPainterPath()
+                first_x, first_y = denormalize_point(stroke.points[0][0], stroke.points[0][1], width, height)
+                path.moveTo(first_x, first_y)
+                for px, py in stroke.points[1:]:
+                    dx, dy = denormalize_point(px, py, width, height)
+                    path.lineTo(dx, dy)
+                painter.drawPath(path)
             now = time.time()
             for ping in self._pings:
                 age = max(0.0, now - float(ping["timestamp"]))
@@ -204,25 +224,19 @@ if QtWidgets is not None:
                 painter.setBrush(core_brush)
                 painter.setPen(QtCore.Qt.PenStyle.NoPen)
                 painter.drawEllipse(QtCore.QPointF(px, py), 5.0, 5.0)
-            for stroke in self.store.all_strokes():
-                if not stroke.points:
-                    continue
-                pen = QtGui.QPen(QtGui.QColor(stroke.color))
-                pen.setWidthF(stroke.width)
-                pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
-                pen.setJoinStyle(QtCore.Qt.PenJoinStyle.RoundJoin)
-                painter.setPen(pen)
-                if len(stroke.points) == 1:
-                    px, py = denormalize_point(stroke.points[0][0], stroke.points[0][1], width, height)
-                    painter.drawPoint(QtCore.QPointF(px, py))
-                    continue
-                path = QtGui.QPainterPath()
-                first_x, first_y = denormalize_point(stroke.points[0][0], stroke.points[0][1], width, height)
-                path.moveTo(first_x, first_y)
-                for px, py in stroke.points[1:]:
-                    dx, dy = denormalize_point(px, py, width, height)
-                    path.lineTo(dx, dy)
-                painter.drawPath(path)
+            text_font = QtGui.QFont("Menlo" if sys.platform == "darwin" else "Consolas")
+            text_font.setPointSizeF(18.0)
+            painter.setFont(text_font)
+            metrics = QtGui.QFontMetricsF(text_font)
+            for text_annotation in self.store.all_text_annotations():
+                px, py = denormalize_point(text_annotation.x, text_annotation.y, width, height)
+                painter.setPen(QtGui.QPen(QtGui.QColor(text_annotation.color)))
+                lines = (text_annotation.text or "").split("\n")
+                for index, line in enumerate(lines):
+                    draw_text = line
+                    if index == len(lines) - 1 and text_annotation.active:
+                        draw_text = f"{draw_text}|"
+                    painter.drawText(QtCore.QPointF(px, py + (index * metrics.lineSpacing())), draw_text)
 else:
     class OverlayWindow:  # pragma: no cover
         def __init__(

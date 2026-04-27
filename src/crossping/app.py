@@ -16,7 +16,17 @@ from .input_hook import GlobalInputController
 from .logging_utils import LOGGER_NAME, setup_logging
 from .mqtt_client import MQTTClient
 from .overlay import OverlayWindow
-from .protocol import ClearSenderMessage, PingMessage, StrokeEndMessage, StrokePointMessage, StrokeStartMessage
+from .protocol import (
+    ClearAllMessage,
+    ClearSenderMessage,
+    PingMessage,
+    StrokeEndMessage,
+    StrokePointMessage,
+    StrokeStartMessage,
+    TextEndMessage,
+    TextStartMessage,
+    TextUpdateMessage,
+)
 from .state import StrokeStore
 from .ui import SettingsWindow
 
@@ -58,7 +68,9 @@ class CrossPingApp:
         self.window.connect_requested.connect(self.connect)
         self.window.disconnect_requested.connect(self.disconnect)
         self.window.runtime_settings_changed.connect(self.apply_runtime_settings)
+        self.window.clear_all_requested.connect(self.clear_all_drawings_and_publish)
         self.window.show()
+        self._refresh_drawer_list()
         self.tray_icon = self._create_tray_icon()
         self.qt_app.aboutToQuit.connect(self.shutdown)
 
@@ -69,12 +81,17 @@ class CrossPingApp:
                 primary.geometry().width() if primary is not None else 1920,
                 primary.geometry().height() if primary is not None else 1080,
             ),
+            pointer_position_provider=lambda: (
+                QtGui.QCursor.pos().x(),
+                QtGui.QCursor.pos().y(),
+            ),
             publish=self.publish,
             on_local_clear=self.request_local_clear,
             on_draw_mode_changed=self._emit_draw_mode_changed,
             color_provider=lambda: self.config.color,
             activation_mode=self.config.activation_mode,
         )
+        self.input_controller.set_color(self.config.color)
 
     def run(self) -> int:
         self.logger.info("run starting")
@@ -112,6 +129,7 @@ class CrossPingApp:
         self.config = config
         self.config.save()
         self.input_controller.set_activation_mode(config.activation_mode)
+        self.input_controller.set_color(config.color)
         self.window.set_config(config)
         self.logger.info("applied runtime settings activation_mode=%s color=%s", config.activation_mode, config.color)
 
@@ -125,6 +143,7 @@ class CrossPingApp:
     def clear_local_sender(self) -> None:
         self.logger.info("clear local sender=%s", self.config.sender_id)
         self.store.clear_sender(self.config.sender_id)
+        self._refresh_drawer_list()
         self.overlay.refresh()
 
     def request_local_clear(self) -> None:
@@ -134,6 +153,16 @@ class CrossPingApp:
         self.clear_local_sender()
         self.publish(ClearSenderMessage.build(self.config.sender_id).encode())
 
+    def clear_all_drawings(self) -> None:
+        self.logger.info("clear all drawings sender=%s", self.config.sender_id)
+        self.store.clear_all()
+        self._refresh_drawer_list()
+        self.overlay.refresh()
+
+    def clear_all_drawings_and_publish(self) -> None:
+        self.clear_all_drawings()
+        self.publish(ClearAllMessage.build(self.config.sender_id).encode())
+
     def ping_local(self, x: float, y: float) -> None:
         self.logger.info("local ping x=%.4f y=%.4f", x, y)
         self.publish(PingMessage.build(self.config.sender_id, x, y, color=self.config.color).encode())
@@ -141,11 +170,11 @@ class CrossPingApp:
     def start_local_stroke(self, stroke_id: str, x: float, y: float) -> None:
         self.logger.info("start local stroke stroke_id=%s x=%.4f y=%.4f", stroke_id, x, y)
         self.publish(StrokeStartMessage.build(self.config.sender_id, stroke_id, color=self.config.color).encode())
-        self.publish(StrokePointMessage.build(self.config.sender_id, stroke_id, x, y).encode())
+        self.publish(StrokePointMessage.build(self.config.sender_id, stroke_id, x, y, color=self.config.color).encode())
 
     def add_local_point(self, stroke_id: str, x: float, y: float) -> None:
         self.logger.debug("add local point stroke_id=%s x=%.4f y=%.4f", stroke_id, x, y)
-        self.publish(StrokePointMessage.build(self.config.sender_id, stroke_id, x, y).encode())
+        self.publish(StrokePointMessage.build(self.config.sender_id, stroke_id, x, y, color=self.config.color).encode())
 
     def end_local_stroke(self, stroke_id: str) -> None:
         self.logger.info("end local stroke stroke_id=%s", stroke_id)
@@ -201,11 +230,14 @@ class CrossPingApp:
                 stroke_id=str(message.get("stroke_id", "")),
                 x=float(message.get("x", 0.0)),
                 y=float(message.get("y", 0.0)),
+                color=str(message.get("color", "#ff3366")),
             )
         elif message_type == "stroke_end":
             self.store.end_stroke(sender_id=sender_id, stroke_id=str(message.get("stroke_id", "")))
         elif message_type == "clear_sender":
             self.store.clear_sender(sender_id=sender_id)
+        elif message_type == "clear_all":
+            self.store.clear_all()
         elif message_type == "ping":
             self.overlay.add_colored_ping(
                 sender_id=sender_id,
@@ -214,7 +246,25 @@ class CrossPingApp:
                 timestamp=float(message.get("timestamp", 0.0)),
                 color=str(message.get("color", "#ff3366")),
             )
+        elif message_type == "text_start":
+            self.store.start_text(
+                sender_id=sender_id,
+                text_id=str(message.get("text_id", "")),
+                x=float(message.get("x", 0.0)),
+                y=float(message.get("y", 0.0)),
+                color=str(message.get("color", "#ff3366")),
+            )
+        elif message_type == "text_update":
+            self.store.update_text(
+                sender_id=sender_id,
+                text_id=str(message.get("text_id", "")),
+                text=str(message.get("text", "")),
+                color=str(message.get("color", "#ff3366")),
+            )
+        elif message_type == "text_end":
+            self.store.end_text(sender_id=sender_id, text_id=str(message.get("text_id", "")))
         self.logger.debug("stroke count=%s", len(self.store.all_strokes()))
+        self._refresh_drawer_list()
         self.overlay.refresh()
 
     def shutdown(self) -> None:
@@ -256,3 +306,6 @@ class CrossPingApp:
 
     def _append_sent_feed(self, payload: str) -> None:
         self.window.append_sent_feed(self._format_feed_line("send", payload))
+
+    def _refresh_drawer_list(self) -> None:
+        self.window.set_visible_senders(self.store.sender_ids(), self.config.sender_id)

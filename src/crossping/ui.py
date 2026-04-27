@@ -26,6 +26,7 @@ if QtWidgets is not None:
         connect_requested = QtCore.Signal(AppConfig)
         disconnect_requested = QtCore.Signal()
         runtime_settings_changed = QtCore.Signal(AppConfig)
+        clear_all_requested = QtCore.Signal()
 
         def __init__(self, config: AppConfig, is_connected: Callable[[], bool]) -> None:
             super().__init__()
@@ -57,6 +58,13 @@ if QtWidgets is not None:
             self.status_label = QtWidgets.QLabel("Disconnected")
             self.toggle_button = QtWidgets.QPushButton("Connect")
             self.toggle_button.clicked.connect(self._on_toggle)
+            self.clear_all_button = QtWidgets.QPushButton("Clear All Drawings")
+            self.clear_all_button.clicked.connect(self.clear_all_requested.emit)
+            self.clear_all_help = QtWidgets.QLabel("Clears every visible drawing in the current room for everyone connected.")
+            self.clear_all_help.setWordWrap(True)
+            self.drawer_list = QtWidgets.QListWidget()
+            self.drawer_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+            self.drawer_list.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
             self.sent_feed = QtWidgets.QPlainTextEdit()
             self.sent_feed.setReadOnly(True)
             self.sent_feed.setMaximumBlockCount(200)
@@ -77,6 +85,12 @@ if QtWidgets is not None:
             layout.addWidget(self.color_help)
             layout.addWidget(self.status_label)
             layout.addWidget(self.toggle_button)
+            layout.addWidget(self.clear_all_button)
+            layout.addWidget(self.clear_all_help)
+            drawers_group = QtWidgets.QGroupBox("Visible Drawers")
+            drawers_layout = QtWidgets.QVBoxLayout(drawers_group)
+            drawers_layout.addWidget(self.drawer_list)
+            layout.addWidget(drawers_group)
             feed_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
             sent_group = QtWidgets.QGroupBox("Sent Feed")
             sent_layout = QtWidgets.QVBoxLayout(sent_group)
@@ -90,10 +104,13 @@ if QtWidgets is not None:
             layout.addWidget(feed_splitter, 1)
             self._update_activation_mode_help()
             self._refresh_status()
+            self.set_visible_senders([], config.sender_id)
 
         def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-            event.ignore()
-            self.hide()
+            event.accept()
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                app.quit()
 
         def show_and_focus(self) -> None:
             self.show()
@@ -156,6 +173,17 @@ if QtWidgets is not None:
 
         def append_received_feed(self, line: str) -> None:
             self.received_feed.appendPlainText(line)
+
+        def set_visible_senders(self, sender_ids: list[str], local_sender_id: str) -> None:
+            self.drawer_list.clear()
+            if not sender_ids:
+                item = QtWidgets.QListWidgetItem("No visible drawings yet.")
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEnabled)
+                self.drawer_list.addItem(item)
+                return
+            for sender_id in sender_ids:
+                label = f"{sender_id} (You)" if sender_id == local_sender_id else sender_id
+                self.drawer_list.addItem(label)
 else:
     class SettingsWindow:  # pragma: no cover
         def __init__(self, config: AppConfig, is_connected: Callable[[], bool]) -> None:
@@ -169,4 +197,7 @@ else:
             return None
 
         def append_received_feed(self, line: str) -> None:
+            return None
+
+        def set_visible_senders(self, sender_ids: list[str], local_sender_id: str) -> None:
             return None
