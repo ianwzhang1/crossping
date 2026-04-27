@@ -1,15 +1,20 @@
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 project_root = Path(SPECPATH).resolve().parent
 hiddenimports = collect_submodules("pynput")
+pyside6_datas, pyside6_binaries, pyside6_hiddenimports = collect_all("PySide6")
+shiboken6_datas, shiboken6_binaries, shiboken6_hiddenimports = collect_all("shiboken6")
+hiddenimports += pyside6_hiddenimports + shiboken6_hiddenimports
+binaries = pyside6_binaries + shiboken6_binaries
+datas = pyside6_datas + shiboken6_datas
 
 a = Analysis(
     [str(project_root / "src" / "crossping" / "__main__.py")],
     pathex=[str(project_root / "src")],
-    binaries=[],
-    datas=[],
+    binaries=binaries,
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

@@ -54,6 +54,19 @@ jobs:
           PIPENV_VENV_IN_PROJECT: "1"
         run: pipenv run pyinstaller packaging/crossping.spec
 
+      - name: Smoke test packaged app startup
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "dist\CrossPing\CrossPing.exe"
+          $configDir = Join-Path $env:RUNNER_TEMP "crossping-config"
+          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+          $process = Start-Process -FilePath $exe -ArgumentList @() -PassThru -WorkingDirectory (Split-Path $exe)
+          Start-Sleep -Seconds 8
+          if ($process.HasExited) {
+            throw "Packaged app exited early with code $($process.ExitCode)"
+          }
+          Stop-Process -Id $process.Id -Force
+
       - name: Archive build output
         shell: pwsh
         run: |
