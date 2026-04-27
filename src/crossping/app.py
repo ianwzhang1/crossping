@@ -57,6 +57,7 @@ class CrossPingApp:
         self.window = SettingsWindow(self.config, self.is_connected)
         self.window.connect_requested.connect(self.connect)
         self.window.disconnect_requested.connect(self.disconnect)
+        self.window.runtime_settings_changed.connect(self.apply_runtime_settings)
         self.window.show()
         self.tray_icon = self._create_tray_icon()
         self.qt_app.aboutToQuit.connect(self.shutdown)
@@ -87,10 +88,7 @@ class CrossPingApp:
     def connect(self, config: AppConfig) -> None:
         if self.client is not None:
             self.disconnect()
-        self.config = config
-        self.config.save()
-        self.input_controller.set_activation_mode(config.activation_mode)
-        self.window.set_config(config)
+        self.apply_runtime_settings(config)
         self.logger.info("connecting broker=%s port=%s room=%s", config.broker_host, config.broker_port, config.room_code)
         self.window.set_connecting()
         self.client = MQTTClient(
@@ -109,6 +107,13 @@ class CrossPingApp:
             self.client.disconnect()
             self.client = None
         self.window.set_connected(False)
+
+    def apply_runtime_settings(self, config: AppConfig) -> None:
+        self.config = config
+        self.config.save()
+        self.input_controller.set_activation_mode(config.activation_mode)
+        self.window.set_config(config)
+        self.logger.info("applied runtime settings activation_mode=%s color=%s", config.activation_mode, config.color)
 
     def publish(self, payload: str) -> None:
         self.logger.debug("publish payload=%s", payload)

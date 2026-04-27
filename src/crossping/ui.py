@@ -25,6 +25,7 @@ if QtWidgets is not None:
     class SettingsWindow(QtWidgets.QWidget):
         connect_requested = QtCore.Signal(AppConfig)
         disconnect_requested = QtCore.Signal()
+        runtime_settings_changed = QtCore.Signal(AppConfig)
 
         def __init__(self, config: AppConfig, is_connected: Callable[[], bool]) -> None:
             super().__init__()
@@ -44,11 +45,13 @@ if QtWidgets is not None:
             self.activation_mode_help = QtWidgets.QLabel()
             self.activation_mode_help.setWordWrap(True)
             self.activation_mode_input.currentIndexChanged.connect(self._update_activation_mode_help)
+            self.activation_mode_input.currentIndexChanged.connect(self._emit_runtime_settings_change)
             self.color_input = QtWidgets.QComboBox()
             for value, label in COLOR_OPTIONS:
                 self.color_input.addItem(label, value)
             current_color_index = self.color_input.findData(config.color)
             self.color_input.setCurrentIndex(max(0, current_color_index))
+            self.color_input.currentIndexChanged.connect(self._emit_runtime_settings_change)
             self.color_help = QtWidgets.QLabel("Your selected color is used for both strokes and ping ripples.")
             self.color_help.setWordWrap(True)
             self.status_label = QtWidgets.QLabel("Disconnected")
@@ -125,7 +128,16 @@ if QtWidgets is not None:
             if self._is_connected():
                 self.disconnect_requested.emit()
                 return
-            config = replace(
+            config = self._current_config()
+            self._config = config
+            self.connect_requested.emit(config)
+
+        def _update_activation_mode_help(self) -> None:
+            activation_mode = str(self.activation_mode_input.currentData())
+            self.activation_mode_help.setText(ACTIVATION_MODE_HELP.get(activation_mode, ""))
+
+        def _current_config(self) -> AppConfig:
+            return replace(
                 self._config,
                 room_code=self.room_input.text(),
                 broker_host=self.broker_input.text().strip(),
@@ -133,12 +145,11 @@ if QtWidgets is not None:
                 activation_mode=str(self.activation_mode_input.currentData()),
                 color=str(self.color_input.currentData()),
             )
-            self._config = config
-            self.connect_requested.emit(config)
 
-        def _update_activation_mode_help(self) -> None:
-            activation_mode = str(self.activation_mode_input.currentData())
-            self.activation_mode_help.setText(ACTIVATION_MODE_HELP.get(activation_mode, ""))
+        def _emit_runtime_settings_change(self) -> None:
+            config = self._current_config()
+            self._config = config
+            self.runtime_settings_changed.emit(config)
 
         def append_sent_feed(self, line: str) -> None:
             self.sent_feed.appendPlainText(line)
