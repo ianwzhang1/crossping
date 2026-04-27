@@ -15,15 +15,6 @@ class Stroke:
 
 
 @dataclass
-class Ping:
-    sender_id: str
-    x: float
-    y: float
-    timestamp: float
-    color: str = "#ff3366"
-
-
-@dataclass
 class TextAnnotation:
     sender_id: str
     text_id: str
@@ -38,6 +29,13 @@ class StrokeStore:
     def __init__(self) -> None:
         self._strokes: Dict[str, Dict[str, Stroke]] = {}
         self._texts: Dict[str, Dict[str, TextAnnotation]] = {}
+
+    @staticmethod
+    def _flatten(items_by_sender: Dict[str, Dict[str, object]]) -> List[object]:
+        items: List[object] = []
+        for sender_items in items_by_sender.values():
+            items.extend(sender_items.values())
+        return items
 
     def start_stroke(self, sender_id: str, stroke_id: str, color: str = "#ff3366", width: float = 3.0) -> Stroke:
         sender_strokes = self._strokes.setdefault(sender_id, {})
@@ -87,16 +85,10 @@ class StrokeStore:
             text_annotation.active = False
 
     def all_strokes(self) -> List[Stroke]:
-        strokes: List[Stroke] = []
-        for sender_strokes in self._strokes.values():
-            strokes.extend(sender_strokes.values())
-        return strokes
+        return list(self._flatten(self._strokes))
 
     def all_text_annotations(self) -> List[TextAnnotation]:
-        text_annotations: List[TextAnnotation] = []
-        for sender_texts in self._texts.values():
-            text_annotations.extend(sender_texts.values())
-        return text_annotations
+        return list(self._flatten(self._texts))
 
     def sender_strokes(self, sender_id: str) -> List[Stroke]:
         return list(self._strokes.get(sender_id, {}).values())

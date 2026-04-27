@@ -20,10 +20,6 @@ from .overlay import OverlayWindow
 from .protocol import (
     ClearAllMessage,
     ClearSenderMessage,
-    PingMessage,
-    StrokeEndMessage,
-    StrokePointMessage,
-    StrokeStartMessage,
     TextEndMessage,
     TextStartMessage,
     TextUpdateMessage,
@@ -59,13 +55,7 @@ class CrossPingApp:
         self.bridge.received_payload.connect(self._append_received_feed)
         self.bridge.sent_payload.connect(self._append_sent_feed)
         self.bridge.local_clear_requested.connect(self.clear_local_sender)
-        self.overlay = OverlayWindow(
-            self.store,
-            on_stroke_start=self.start_local_stroke,
-            on_stroke_point=self.add_local_point,
-            on_stroke_end=self.end_local_stroke,
-            on_clear=self.clear_local_sender_and_publish,
-        )
+        self.overlay = OverlayWindow(self.store)
         self.bridge.draw_mode_changed.connect(self.overlay_draw_mode_changed)
         self.client = None  # type: Optional[MQTTClient]
         self.window = SettingsWindow(self.config, self.is_connected)
@@ -200,23 +190,6 @@ class CrossPingApp:
     def clear_all_drawings_and_publish(self) -> None:
         self.clear_all_drawings()
         self.publish(ClearAllMessage.build(self.config.sender_id).encode())
-
-    def ping_local(self, x: float, y: float) -> None:
-        self.logger.info("local ping x=%.4f y=%.4f", x, y)
-        self.publish(PingMessage.build(self.config.sender_id, x, y, color=self.config.color).encode())
-
-    def start_local_stroke(self, stroke_id: str, x: float, y: float) -> None:
-        self.logger.info("start local stroke stroke_id=%s x=%.4f y=%.4f", stroke_id, x, y)
-        self.publish(StrokeStartMessage.build(self.config.sender_id, stroke_id, color=self.config.color).encode())
-        self.publish(StrokePointMessage.build(self.config.sender_id, stroke_id, x, y, color=self.config.color).encode())
-
-    def add_local_point(self, stroke_id: str, x: float, y: float) -> None:
-        self.logger.debug("add local point stroke_id=%s x=%.4f y=%.4f", stroke_id, x, y)
-        self.publish(StrokePointMessage.build(self.config.sender_id, stroke_id, x, y, color=self.config.color).encode())
-
-    def end_local_stroke(self, stroke_id: str) -> None:
-        self.logger.info("end local stroke stroke_id=%s", stroke_id)
-        self.publish(StrokeEndMessage.build(self.config.sender_id, stroke_id).encode())
 
     def handle_message_from_payload(self, payload: str) -> None:
         from .protocol import decode_message

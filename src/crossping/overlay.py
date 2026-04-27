@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
-from ctypes import c_void_p
-from collections.abc import Callable
 import time
-
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
 except ImportError:  # pragma: no cover
@@ -15,45 +11,326 @@ except ImportError:  # pragma: no cover
 try:
     import objc
     from AppKit import (
+        NSApp,
+        NSBackingStoreBuffered,
+        NSBezierPath,
         NSColor,
+        NSFont,
+        NSFontAttributeName,
+        NSForegroundColorAttributeName,
+        NSPanel,
+        NSScreen,
+        NSScreenSaverWindowLevel,
         NSStatusWindowLevel,
+        NSString,
+        NSView,
+        NSWindowCollectionBehaviorCanJoinAllApplications,
         NSWindowCollectionBehaviorCanJoinAllSpaces,
         NSWindowCollectionBehaviorFullScreenAuxiliary,
         NSWindowCollectionBehaviorStationary,
+        NSWindowStyleMaskBorderless,
+        NSWorkspace,
+        NSWorkspaceActiveSpaceDidChangeNotification,
     )
+    from Foundation import NSMakeRect, NSObject
 except ImportError:  # pragma: no cover
     objc = None
+    NSApp = None
+    NSBackingStoreBuffered = None
+    NSBezierPath = None
     NSColor = None
+    NSFont = None
+    NSFontAttributeName = None
+    NSForegroundColorAttributeName = None
+    NSPanel = None
+    NSScreen = None
+    NSScreenSaverWindowLevel = None
     NSStatusWindowLevel = None
+    NSString = None
+    NSView = None
+    NSWindowCollectionBehaviorCanJoinAllApplications = None
     NSWindowCollectionBehaviorCanJoinAllSpaces = None
     NSWindowCollectionBehaviorFullScreenAuxiliary = None
     NSWindowCollectionBehaviorStationary = None
+    NSWindowStyleMaskBorderless = None
+    NSWorkspace = None
+    NSWorkspaceActiveSpaceDidChangeNotification = None
+    NSMakeRect = None
+    NSObject = None
 
+from .logging_utils import LOGGER_NAME
 from .protocol import denormalize_point
 from .state import StrokeStore
-from .logging_utils import LOGGER_NAME
 
 
-if QtWidgets is not None:
-    class OverlayWindow(QtWidgets.QWidget):
-        def __init__(
-            self,
-            store: StrokeStore,
-            on_stroke_start: Callable[[str, float, float], None],
-            on_stroke_point: Callable[[str, float, float], None],
-            on_stroke_end: Callable[[str], None],
-            on_clear: Callable[[], None],
-        ) -> None:
+def _hex_to_nscolor(value: str, alpha: float = 1.0) -> object:
+    value = value.lstrip("#")
+    if len(value) != 6 or NSColor is None:
+        return NSColor.clearColor() if NSColor is not None else None
+    red = int(value[0:2], 16) / 255.0
+    green = int(value[2:4], 16) / 255.0
+    blue = int(value[4:6], 16) / 255.0
+    return NSColor.colorWithCalibratedRed_green_blue_alpha_(red, green, blue, alpha)
+
+
+def _rect_components(rect: object) -> tuple[float, float, float, float]:
+    if hasattr(rect, "origin") and hasattr(rect, "size"):
+        return rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
+    return rect[0][0], rect[0][1], rect[1][0], rect[1][1]
+
+
+def _union_screen_rect() -> tuple[float, float, float, float]:
+    if NSScreen is None:
+        return 0.0, 0.0, 1920.0, 1080.0
+    screens = list(NSScreen.screens() or [])
+    if not screens:
+        return 0.0, 0.0, 1920.0, 1080.0
+    rects = [_rect_components(screen.frame()) for screen in screens]
+    min_x = min(rect[0] for rect in rects)
+    min_y = min(rect[1] for rect in rects)
+    max_x = max(rect[0] + rect[2] for rect in rects)
+    max_y = max(rect[1] + rect[3] for rect in rects)
+    return min_x, min_y, max_x - min_x, max_y - min_y
+
+
+if QtWidgets is not None and sys.platform == "darwin" and objc is not None and NSView is not None and NSObject is not None:
+    class _SpaceChangeObserver(NSObject):
+        def initWithOverlay_(self, overlay: "OverlayWindow"):
+            self = objc.super(_SpaceChangeObserver, self).init()
+            if self is None:
+                return None
+            self.overlay = overlay
+            return self
+
+        def activeSpaceDidChange_(self, notification: object) -> None:
+            self.overlay._handle_active_space_changed()
+
+
+    class _OverlayContentView(NSView):
+        def initWithOverlay_(self, overlay: "OverlayWindow"):
+            self = objc.super(_OverlayContentView, self).init()
+            if self is None:
+                return None
+            self.overlay = overlay
+            return self
+
+        def isOpaque(self) -> bool:
+            return False
+
+        def isFlipped(self) -> bool:
+            return True
+
+        def drawRect_(self, rect: object) -> None:
+            overlay = self.overlay
+            width = max(1.0, self.bounds().size.width)
+            height = max(1.0, self.bounds().size.height)
+            overlay.logger.debug("native paint event strokes=%s draw_mode=%s", len(overlay.store.all_strokes()), overlay.draw_mode_active)
+
+            for stroke in overlay.store.all_strokes():
+                if not stroke.points:
+                    continue
+                color = _hex_to_nscolor(stroke.color, 1.0)
+                color.set()
+                if len(stroke.points) == 1:
+                    px, py = denormalize_point(stroke.points[0][0], stroke.points[0][1], width, height)
+                    path = NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(px - 2.0, py - 2.0, 4.0, 4.0))
+                    path.fill()
+                    continue
+                path = NSBezierPath.bezierPath()
+                path.setLineWidth_(stroke.width)
+                first_x, first_y = denormalize_point(stroke.points[0][0], stroke.points[0][1], width, height)
+                path.moveToPoint_((first_x, first_y))
+                for point_x, point_y in stroke.points[1:]:
+                    dx, dy = denormalize_point(point_x, point_y, width, height)
+                    path.lineToPoint_((dx, dy))
+                path.stroke()
+
+            now = time.time()
+            for ping in overlay._pings:
+                age = max(0.0, now - float(ping["timestamp"]))
+                progress = min(1.0, age / 0.9)
+                radius = 18.0 + progress * 80.0
+                alpha = max(0.0, 0.78 * (1.0 - progress))
+                px, py = denormalize_point(float(ping["x"]), float(ping["y"]), width, height)
+                ring_color = _hex_to_nscolor(str(ping.get("color", "#ff3366")), alpha)
+                ring_color.set()
+                ring = NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(px - radius, py - radius, radius * 2.0, radius * 2.0))
+                ring.setLineWidth_(max(1.0, 5.0 - (progress * 3.0)))
+                ring.stroke()
+                core_radius = 5.0
+                core_color = _hex_to_nscolor(str(ping.get("color", "#ff3366")), max(0.0, 0.7 * (1.0 - progress)))
+                core_color.set()
+                core = NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(px - core_radius, py - core_radius, core_radius * 2.0, core_radius * 2.0))
+                core.fill()
+
+            font = NSFont.fontWithName_size_("Menlo", 18.0) or NSFont.monospacedSystemFontOfSize_weight_(18.0, 0.0)
+            for text_annotation in overlay.store.all_text_annotations():
+                px, py = denormalize_point(text_annotation.x, text_annotation.y, width, height)
+                color = _hex_to_nscolor(text_annotation.color, 1.0)
+                attributes = {
+                    NSFontAttributeName: font,
+                    NSForegroundColorAttributeName: color,
+                }
+                lines = (text_annotation.text or "").split("\n")
+                line_height = font.ascender() - font.descender() + font.leading()
+                for index, line in enumerate(lines):
+                    draw_text = line
+                    if index == len(lines) - 1 and text_annotation.active:
+                        draw_text = f"{draw_text}|"
+                    NSString.stringWithString_(draw_text).drawAtPoint_withAttributes_((px, py + (index * line_height)), attributes)
+
+
+    class OverlayWindow(QtCore.QObject):
+        def __init__(self, store: StrokeStore) -> None:
             super().__init__()
             self.logger = logging.getLogger(LOGGER_NAME)
             self.store = store
-            self.on_stroke_start = on_stroke_start
-            self.on_stroke_point = on_stroke_point
-            self.on_stroke_end = on_stroke_end
-            self.on_clear = on_clear
             self.draw_mode_active = False
-            self.active_stroke_id = None
-            self._native_window = None
+            self._pings = []
+            self._tracked_screens = []
+            self._space_observer = None
+            self._space_notification_center = None
+            self._window = None
+            self._view = None
+            self._build_native_window()
+            self._install_screen_hooks()
+            self._install_space_change_observer()
+            self._animation_timer = QtCore.QTimer(self)
+            self._animation_timer.setInterval(16)
+            self._animation_timer.timeout.connect(self._tick_animation)
+
+        def _build_native_window(self) -> None:
+            x, y, width, height = _union_screen_rect()
+            rect = NSMakeRect(x, y, width, height)
+            self._window = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+                rect,
+                NSWindowStyleMaskBorderless,
+                NSBackingStoreBuffered,
+                False,
+            )
+            self._window.setOpaque_(False)
+            self._window.setBackgroundColor_(NSColor.clearColor())
+            self._window.setHasShadow_(False)
+            self._window.setHidesOnDeactivate_(False)
+            self._window.setFloatingPanel_(True)
+            self._window.setBecomesKeyOnlyIfNeeded_(True)
+            level = NSScreenSaverWindowLevel if NSScreenSaverWindowLevel is not None else NSStatusWindowLevel
+            self._window.setLevel_(level)
+            behavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary
+            if NSWindowCollectionBehaviorCanJoinAllApplications is not None:
+                behavior |= NSWindowCollectionBehaviorCanJoinAllApplications
+            if NSWindowCollectionBehaviorFullScreenAuxiliary is not None:
+                behavior |= NSWindowCollectionBehaviorFullScreenAuxiliary
+            self._window.setCollectionBehavior_(behavior)
+            self._window.setIgnoresMouseEvents_(True)
+            self._view = _OverlayContentView.alloc().initWithOverlay_(self)
+            self._view.setFrame_(rect)
+            self._window.setContentView_(self._view)
+            self._window.orderFront_(None)
+            NSApp.activateIgnoringOtherApps_(False)
+            self.logger.info(
+                "native overlay initialized geometry=(%s,%s %sx%s) level=%s can_join_all_apps=%s",
+                x,
+                y,
+                width,
+                height,
+                level,
+                NSWindowCollectionBehaviorCanJoinAllApplications is not None,
+            )
+
+        def refresh(self) -> None:
+            if self._view is not None:
+                self._view.setNeedsDisplay_(True)
+
+        def add_ping(self, sender_id: str, x: float, y: float, timestamp: float) -> None:
+            self._pings.append({"sender_id": sender_id, "x": x, "y": y, "timestamp": time.time(), "color": "#ff3366"})
+            if not self._animation_timer.isActive():
+                self._animation_timer.start()
+            self.refresh()
+
+        def add_colored_ping(self, sender_id: str, x: float, y: float, timestamp: float, color: str) -> None:
+            self._pings.append({"sender_id": sender_id, "x": x, "y": y, "timestamp": time.time(), "color": color})
+            if not self._animation_timer.isActive():
+                self._animation_timer.start()
+            self.refresh()
+
+        def set_draw_mode_active(self, active: bool, interactive: bool = True) -> None:
+            self.draw_mode_active = active
+            passthrough = (not active) or (not interactive)
+            self.logger.info("native overlay draw mode active=%s interactive=%s passthrough=%s", active, interactive, passthrough)
+            if self._window is not None:
+                self._window.setIgnoresMouseEvents_(passthrough)
+            self.refresh()
+
+        def _tick_animation(self) -> None:
+            now = time.time()
+            self._pings = [ping for ping in self._pings if now - float(ping["timestamp"]) <= 0.9]
+            if not self._pings:
+                self._animation_timer.stop()
+            self.refresh()
+
+        def _install_screen_hooks(self) -> None:
+            app = QtGui.QGuiApplication.instance()
+            if app is None:
+                return
+            if hasattr(app, "screenAdded"):
+                app.screenAdded.connect(lambda screen: self._reconnect_screen_hooks())
+            if hasattr(app, "screenRemoved"):
+                app.screenRemoved.connect(lambda screen: self._reconnect_screen_hooks())
+            self._reconnect_screen_hooks()
+
+        def _reconnect_screen_hooks(self) -> None:
+            self._tracked_screens = list(QtGui.QGuiApplication.screens())
+            for screen in self._tracked_screens:
+                if hasattr(screen, "geometryChanged"):
+                    screen.geometryChanged.connect(self._handle_screen_geometry_changed, QtCore.Qt.ConnectionType.UniqueConnection)
+                if hasattr(screen, "virtualGeometryChanged"):
+                    screen.virtualGeometryChanged.connect(self._handle_screen_geometry_changed, QtCore.Qt.ConnectionType.UniqueConnection)
+            QtCore.QTimer.singleShot(0, self._refresh_geometry)
+
+        def _handle_screen_geometry_changed(self, *args: object) -> None:
+            QtCore.QTimer.singleShot(0, self._refresh_geometry)
+
+        def _refresh_geometry(self) -> None:
+            if self._window is None or self._view is None:
+                return
+            x, y, width, height = _union_screen_rect()
+            rect = NSMakeRect(x, y, width, height)
+            self._window.setFrame_display_(rect, True)
+            self._view.setFrame_(NSMakeRect(0.0, 0.0, width, height))
+            self._window.orderFront_(None)
+            self.refresh()
+
+        def _install_space_change_observer(self) -> None:
+            if NSWorkspace is None:
+                return
+            workspace = NSWorkspace.sharedWorkspace()
+            notification_center = workspace.notificationCenter()
+            observer = _SpaceChangeObserver.alloc().initWithOverlay_(self)
+            notification_center.addObserver_selector_name_object_(
+                observer,
+                b"activeSpaceDidChange:",
+                NSWorkspaceActiveSpaceDidChangeNotification,
+                None,
+            )
+            self._space_observer = observer
+            self._space_notification_center = notification_center
+            self.logger.info("installed native macOS active space observer")
+
+        def _handle_active_space_changed(self) -> None:
+            self.logger.info("native overlay active space changed")
+            QtCore.QTimer.singleShot(0, self._refresh_geometry)
+
+else:
+    class OverlayWindow(QtWidgets.QWidget if QtWidgets is not None else object):  # pragma: no cover
+        def __init__(self, store: StrokeStore) -> None:
+            if QtWidgets is None:
+                self.store = store
+                return
+            super().__init__()
+            self.logger = logging.getLogger(LOGGER_NAME)
+            self.store = store
+            self.draw_mode_active = False
             self._pings = []
             self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
             self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
@@ -69,143 +346,45 @@ if QtWidgets is not None:
             geometry = screen.virtualGeometry() if screen is not None else QtCore.QRect(0, 0, 1920, 1080)
             self.setGeometry(geometry)
             self.show()
-            self._apply_native_window_configuration()
-            self._bring_to_front()
             self._animation_timer = QtCore.QTimer(self)
             self._animation_timer.setInterval(16)
             self._animation_timer.timeout.connect(self._tick_animation)
-            self.logger.info(
-                "overlay initialized geometry=(%s,%s %sx%s) native_window=%s",
-                geometry.x(),
-                geometry.y(),
-                geometry.width(),
-                geometry.height(),
-                bool(self._native_window),
-            )
 
         def refresh(self) -> None:
-            self.logger.debug("overlay refresh requested")
-            self.update()
+            if QtWidgets is not None:
+                self.update()
 
         def add_ping(self, sender_id: str, x: float, y: float, timestamp: float) -> None:
-            self.logger.info("overlay ping sender=%s x=%.4f y=%.4f", sender_id, x, y)
-            # Animate from local receipt time so peer clock skew does not delay or skip pings.
             self._pings.append({"sender_id": sender_id, "x": x, "y": y, "timestamp": time.time(), "color": "#ff3366"})
             if not self._animation_timer.isActive():
                 self._animation_timer.start()
             self.update()
 
         def add_colored_ping(self, sender_id: str, x: float, y: float, timestamp: float, color: str) -> None:
-            self.logger.info("overlay ping sender=%s x=%.4f y=%.4f color=%s", sender_id, x, y, color)
-            # Animate from local receipt time so peer clock skew does not delay or skip pings.
             self._pings.append({"sender_id": sender_id, "x": x, "y": y, "timestamp": time.time(), "color": color})
             if not self._animation_timer.isActive():
                 self._animation_timer.start()
             self.update()
 
         def set_draw_mode_active(self, active: bool, interactive: bool = True) -> None:
-            if not active and self.active_stroke_id is not None:
-                self.on_stroke_end(self.active_stroke_id)
-                self.active_stroke_id = None
-                self.releaseMouse()
             self.draw_mode_active = active
             passthrough = (not active) or (not interactive)
-            self.logger.info(
-                "overlay draw mode active=%s interactive=%s passthrough=%s",
-                active,
-                interactive,
-                passthrough,
-            )
             self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, passthrough)
-            self._set_native_mouse_passthrough(passthrough)
             self.show()
-            self._bring_to_front()
             self.update()
-
-        def _apply_native_window_configuration(self) -> None:
-            if sys.platform != "darwin" or objc is None:
-                return
-            if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
-                return
-            try:
-                native_object = objc.objc_object(c_void_p=int(self.winId()))
-            except Exception:
-                self._native_window = None
-                return
-            if native_object is None:
-                return
-            native_window = getattr(native_object, "window", None)
-            if callable(native_window):
-                native_object = native_window()
-            self._native_window = native_object
-            if self._native_window is None:
-                return
-            self._native_window.setOpaque_(False)
-            self._native_window.setBackgroundColor_(NSColor.clearColor())
-            self._native_window.setHasShadow_(False)
-            self._native_window.setLevel_(NSStatusWindowLevel)
-            behavior = (
-                NSWindowCollectionBehaviorCanJoinAllSpaces
-                | NSWindowCollectionBehaviorFullScreenAuxiliary
-                | NSWindowCollectionBehaviorStationary
-            )
-            self._native_window.setCollectionBehavior_(behavior)
-            self._native_window.setIgnoresMouseEvents_(True)
-            self._native_window.orderFrontRegardless()
-            self.logger.info("applied native macOS window configuration")
-
-        def _set_native_mouse_passthrough(self, passthrough: bool) -> None:
-            if self._native_window is None:
-                return
-            self.logger.debug("native mouse passthrough=%s", passthrough)
-            self._native_window.setIgnoresMouseEvents_(passthrough)
-
-        def _bring_to_front(self) -> None:
-            if self._native_window is not None:
-                self._native_window.orderFrontRegardless()
-            else:
-                self.raise_()
 
         def _tick_animation(self) -> None:
             now = time.time()
             self._pings = [ping for ping in self._pings if now - float(ping["timestamp"]) <= 0.9]
             if not self._pings:
                 self._animation_timer.stop()
-                return
             self.update()
 
-        def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
-            if not self.draw_mode_active:
-                self.logger.debug("ignored mouse press while draw mode inactive")
-                event.ignore()
-                return
-            self.logger.debug("overlay intercepted mouse press button=%s", event.button())
-            event.accept()
-
-        def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
-            if not self.draw_mode_active:
-                event.ignore()
-                return
-            event.accept()
-
-        def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
-            event.accept()
-
         def paintEvent(self, event: QtGui.QPaintEvent) -> None:
-            self.logger.debug("paint event strokes=%s draw_mode=%s", len(self.store.all_strokes()), self.draw_mode_active)
             painter = QtGui.QPainter(self)
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
             width = max(1, self.width())
             height = max(1, self.height())
-            self.logger.debug(
-                "paint geometry widget=(%s,%s %sx%s)",
-                self.geometry().x(),
-                self.geometry().y(),
-                width,
-                height,
-            )
-            if self.draw_mode_active:
-                painter.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 1))
             for stroke in self.store.all_strokes():
                 if not stroke.points:
                     continue
@@ -222,8 +401,8 @@ if QtWidgets is not None:
                 path = QtGui.QPainterPath()
                 first_x, first_y = denormalize_point(stroke.points[0][0], stroke.points[0][1], width, height)
                 path.moveTo(first_x, first_y)
-                for px, py in stroke.points[1:]:
-                    dx, dy = denormalize_point(px, py, width, height)
+                for point_x, point_y in stroke.points[1:]:
+                    dx, dy = denormalize_point(point_x, point_y, width, height)
                     path.lineTo(dx, dy)
                 painter.drawPath(path)
             now = time.time()
@@ -259,23 +438,3 @@ if QtWidgets is not None:
                     if index == len(lines) - 1 and text_annotation.active:
                         draw_text = f"{draw_text}|"
                     painter.drawText(QtCore.QPointF(px, py + (index * metrics.lineSpacing())), draw_text)
-else:
-    class OverlayWindow:  # pragma: no cover
-        def __init__(
-            self,
-            store: StrokeStore,
-            on_stroke_start: Callable[[str, float, float], None],
-            on_stroke_point: Callable[[str, float, float], None],
-            on_stroke_end: Callable[[str], None],
-            on_clear: Callable[[], None],
-        ) -> None:
-            self.store = store
-
-        def show(self) -> None:
-            return None
-
-        def refresh(self) -> None:
-            return None
-
-        def set_draw_mode_active(self, active: bool, interactive: bool = True) -> None:
-            return None
