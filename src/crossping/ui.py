@@ -17,7 +17,7 @@ ACTIVATION_MODE_OPTIONS = (
 
 ACTIVATION_MODE_HELP = {
     "ctrl_shift": "Hold Ctrl+Shift to arm drawing. Left-drag draws. Right-click clears your strokes.",
-    "middle_click": "Middle-click sends a ping ripple. Hold Shift and middle-drag to draw. Ctrl+middle-click clears your strokes.",
+    "middle_click": "Middle-click and release pings. Middle-click and drag draws. Command+middle-click clears on macOS, and Ctrl+middle-click clears on Windows.",
 }
 
 

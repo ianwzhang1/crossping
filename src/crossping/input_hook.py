@@ -99,6 +99,8 @@ class GlobalInputController:
         self.mouse_listener = None
         self._draw_mode_active = False
         self.active_stroke_id = None  # type: Optional[str]
+        self.middle_button_down = False
+        self.middle_press_position = None  # type: Optional[Tuple[int, int]]
         self.text_mode_active = False
         self.active_text_id = None  # type: Optional[str]
         self.active_text_value = ""
@@ -150,7 +152,7 @@ class GlobalInputController:
         if self.text_mode_active:
             return False
         if self.activation_mode == "middle_click":
-            return self.shift_down
+            return self.middle_button_down
         return self.ctrl_down and self.shift_down
 
     def _sync_draw_mode(self) -> None:
@@ -240,40 +242,49 @@ class GlobalInputController:
     def _handle_middle_click_mode(self, x: int, y: int, button: object, pressed: bool) -> None:
         if mouse is None or button != mouse.Button.middle:
             return
+        if pressed:
+            self.middle_button_down = True
+            self.middle_press_position = (x, y)
+            self._sync_draw_mode()
+        else:
+            self.middle_button_down = False
+            self._sync_draw_mode()
         if self.active_stroke_id is not None and not pressed:
             self.logger.info("middle draw release stroke_id=%s", self.active_stroke_id)
             self.publish(StrokeEndMessage.build(self.sender_id, self.active_stroke_id).encode())
             self.active_stroke_id = None
+            self.middle_press_position = None
             return
-        if self.ctrl_down and pressed:
+        if self._middle_clear_modifier_down() and pressed:
             self.logger.info("middle click clear x=%s y=%s", x, y)
             self.on_local_clear()
             self.publish(ClearSenderMessage.build(self.sender_id).encode())
+            self.middle_press_position = None
             return
-        if self._draw_mode_active and pressed:
-            self.active_stroke_id = secrets.token_hex(8)
-            self.logger.info("middle draw press stroke_id=%s x=%s y=%s color=%s", self.active_stroke_id, x, y, self.current_color)
-            self.publish(
-                StrokeStartMessage.build(
-                    self.sender_id,
-                    self.active_stroke_id,
-                    color=self.current_color,
-                ).encode()
-            )
-            self._publish_point(x, y)
-            return
-        if pressed and not self._draw_mode_active:
+        if not pressed and self.middle_press_position is not None:
             width, height = self.screen_size_provider()
-            nx, ny = normalize_point(x, y, width, height)
+            nx, ny = normalize_point(self.middle_press_position[0], self.middle_press_position[1], width, height)
             self.logger.info("middle click ping x=%.4f y=%.4f color=%s", nx, ny, self.current_color)
             self.publish(PingMessage.build(self.sender_id, nx, ny, color=self.current_color).encode())
+            self.middle_press_position = None
 
     def _on_move(self, x: int, y: int) -> None:
+        if self.activation_mode == "middle_click" and self.middle_button_down and self.active_stroke_id is None and self.middle_press_position is not None:
+            start_x, start_y = self.middle_press_position
+            if (x, y) != (start_x, start_y):
+                self.active_stroke_id = secrets.token_hex(8)
+                self.logger.info("middle draw press stroke_id=%s x=%s y=%s color=%s", self.active_stroke_id, start_x, start_y, self.current_color)
+                self.publish(
+                    StrokeStartMessage.build(
+                        self.sender_id,
+                        self.active_stroke_id,
+                        color=self.current_color,
+                    ).encode()
+                )
+                self._publish_point(start_x, start_y)
         if self.text_mode_active:
             return
         if self.active_stroke_id is None:
-            return
-        if self.activation_mode == "middle_click" and not self.shift_down:
             return
         if self.activation_mode == "ctrl_shift" and not self._draw_mode_active:
             return
@@ -301,6 +312,9 @@ class GlobalInputController:
         self.active_stroke_id = None
 
     def _text_toggle_modifier_active(self) -> bool:
+        return self.cmd_down if sys.platform == "darwin" else self.ctrl_down
+
+    def _middle_clear_modifier_down(self) -> bool:
         return self.cmd_down if sys.platform == "darwin" else self.ctrl_down
 
     def _is_text_toggle_hotkey(self, key: object) -> bool:
