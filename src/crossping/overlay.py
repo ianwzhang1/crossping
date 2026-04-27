@@ -89,14 +89,16 @@ if QtWidgets is not None:
 
         def add_ping(self, sender_id: str, x: float, y: float, timestamp: float) -> None:
             self.logger.info("overlay ping sender=%s x=%.4f y=%.4f", sender_id, x, y)
-            self._pings.append({"sender_id": sender_id, "x": x, "y": y, "timestamp": timestamp, "color": "#ff3366"})
+            # Animate from local receipt time so peer clock skew does not delay or skip pings.
+            self._pings.append({"sender_id": sender_id, "x": x, "y": y, "timestamp": time.time(), "color": "#ff3366"})
             if not self._animation_timer.isActive():
                 self._animation_timer.start()
             self.update()
 
         def add_colored_ping(self, sender_id: str, x: float, y: float, timestamp: float, color: str) -> None:
             self.logger.info("overlay ping sender=%s x=%.4f y=%.4f color=%s", sender_id, x, y, color)
-            self._pings.append({"sender_id": sender_id, "x": x, "y": y, "timestamp": timestamp, "color": color})
+            # Animate from local receipt time so peer clock skew does not delay or skip pings.
+            self._pings.append({"sender_id": sender_id, "x": x, "y": y, "timestamp": time.time(), "color": color})
             if not self._animation_timer.isActive():
                 self._animation_timer.start()
             self.update()

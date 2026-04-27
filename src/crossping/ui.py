@@ -16,8 +16,8 @@ ACTIVATION_MODE_OPTIONS = {
 }
 
 ACTIVATION_MODE_HELP = {
-    "middle_click": "Controls: Middle-click and release pings. Middle-click and drag draws. Ctrl+middle-click clears on Windows.",
-    "ctrl_shift": "Controls: Hold Ctrl+Shift. Click to ping. Drag to draw. Right-click clears your drawings.",
+    "middle_click": "Controls: Middle-click and release pings. Middle-click and drag draws. Ctrl+middle-click clears on Windows. Use Alt+1 on Windows or Command+1 on macOS to toggle text writing.",
+    "ctrl_shift": "Controls: Hold Ctrl+Shift. Click to ping. Drag to draw. Right-click clears your drawings. Use Alt+1 on Windows or Command+1 on macOS to toggle text writing.",
 }
 
 
