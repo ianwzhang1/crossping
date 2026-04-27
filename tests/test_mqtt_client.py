@@ -1,3 +1,4 @@
+import threading
 from types import SimpleNamespace
 
 from crossping.mqtt_client import MQTTClient
@@ -14,6 +15,7 @@ class FakeMQTTClient:
         self.loop_started = False
         self.loop_stopped = False
         self.disconnected = False
+        self.waited_for_publish = False
 
     def connect_async(self, host: str, port: int, keepalive: int = 30) -> None:
         self.connected.append((host, port, keepalive))
@@ -32,6 +34,10 @@ class FakeMQTTClient:
 
     def publish(self, topic: str, payload: str) -> None:
         self.published.append((topic, payload))
+        return self
+
+    def wait_for_publish(self) -> None:
+        self.waited_for_publish = True
 
 
 def test_mqtt_client_connects_publishes_and_decodes_messages() -> None:
@@ -61,6 +67,9 @@ def test_mqtt_client_connects_publishes_and_decodes_messages() -> None:
     client.publish('{"type":"clear_sender","sender_id":"abc","timestamp":1}')
     assert fake.published == [("crossping/room7", '{"type":"clear_sender","sender_id":"abc","timestamp":1}')]
 
+    client.publish('{"type":"clear_sender","sender_id":"abc","timestamp":2}', wait=True)
+    assert fake.waited_for_publish is True
+
     fake_message = SimpleNamespace(payload=b'{"type":"clear_sender","sender_id":"abc","timestamp":1}')
     client._handle_message(fake, None, fake_message)
     assert raw_received == ['{"type":"clear_sender","sender_id":"abc","timestamp":1}']
@@ -69,3 +78,28 @@ def test_mqtt_client_connects_publishes_and_decodes_messages() -> None:
     client.disconnect()
     assert fake.disconnected is True
     assert fake.loop_stopped is True
+
+
+def test_mqtt_client_can_disconnect_without_waiting() -> None:
+    fake = FakeMQTTClient()
+    started = threading.Event()
+    released = threading.Event()
+
+    def blocking_loop_stop() -> None:
+        started.set()
+        released.wait(timeout=2)
+        fake.loop_stopped = True
+
+    fake.loop_stop = blocking_loop_stop
+    client = MQTTClient(
+        broker_host="broker.example",
+        broker_port=1883,
+        room_code="Room 7",
+        on_message=lambda payload: None,
+        client_factory=lambda: fake,
+    )
+
+    client.disconnect(wait=False)
+    assert fake.disconnected is True
+    assert started.wait(timeout=1) is True
+    released.set()

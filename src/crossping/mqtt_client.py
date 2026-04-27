@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from typing import Optional
 
@@ -56,15 +57,29 @@ class MQTTClient:
         self.client.connect_async(self.broker_host, self.broker_port, keepalive=30)
         self.client.loop_start()
 
-    def disconnect(self) -> None:
+    def disconnect(self, wait: bool = True) -> None:
         self.logger.info("mqtt disconnect")
-        self.client.disconnect()
-        self.client.loop_stop()
+        try:
+            self.client.disconnect()
+        except Exception:
+            self.logger.exception("mqtt disconnect request failed")
+        if wait:
+            self.client.loop_stop()
+        else:
+            threading.Thread(target=self._loop_stop_background, name="crossping-mqtt-stop", daemon=True).start()
         self._connected = False
 
-    def publish(self, payload: str) -> None:
+    def _loop_stop_background(self) -> None:
+        try:
+            self.client.loop_stop()
+        except Exception:
+            self.logger.exception("mqtt loop_stop failed")
+
+    def publish(self, payload: str, wait: bool = False) -> None:
         self.logger.debug("mqtt publish topic=%s payload=%s", self.topic, payload)
-        self.client.publish(self.topic, payload)
+        publish_result = self.client.publish(self.topic, payload)
+        if wait and hasattr(publish_result, "wait_for_publish"):
+            publish_result.wait_for_publish()
 
     def _handle_connect(self, client: object, userdata: object, flags: object, reason_code: object, properties: Optional[object] = None) -> None:
         self._connected = True

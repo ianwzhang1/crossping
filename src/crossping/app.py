@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import signal
 import sys
 import time
 from typing import Optional
@@ -46,6 +47,9 @@ class CrossPingApp:
         self.logger = logging.getLogger(LOGGER_NAME)
         self.qt_app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
         self.qt_app.setQuitOnLastWindowClosed(False)
+        self._signal_timer = QtCore.QTimer()
+        self._signal_timer.setInterval(250)
+        self._signal_timer.timeout.connect(lambda: None)
         self.config = AppConfig.load()
         self.logger.info("app starting log_path=%s room=%s sender=%s", log_path, self.config.room_code, self.config.sender_id)
         self.store = StrokeStore()
@@ -75,16 +79,21 @@ class CrossPingApp:
         self.qt_app.aboutToQuit.connect(self.shutdown)
 
         primary = QtGui.QGuiApplication.primaryScreen()
+        def virtual_geometry() -> QtCore.QRect:
+            screen = QtGui.QGuiApplication.primaryScreen()
+            return screen.virtualGeometry() if screen is not None else QtCore.QRect(0, 0, 1920, 1080)
+
         self.input_controller = GlobalInputController(
             sender_id=self.config.sender_id,
             screen_size_provider=lambda: (
-                primary.geometry().width() if primary is not None else 1920,
-                primary.geometry().height() if primary is not None else 1080,
+                virtual_geometry().width(),
+                virtual_geometry().height(),
             ),
             pointer_position_provider=lambda: (
-                QtGui.QCursor.pos().x(),
-                QtGui.QCursor.pos().y(),
+                QtGui.QCursor.pos().x() - virtual_geometry().x(),
+                QtGui.QCursor.pos().y() - virtual_geometry().y(),
             ),
+            input_enabled_provider=self.is_connected,
             publish=self.publish,
             on_local_clear=self.request_local_clear,
             on_draw_mode_changed=self._emit_draw_mode_changed,
@@ -92,12 +101,40 @@ class CrossPingApp:
             activation_mode=self.config.activation_mode,
         )
         self.input_controller.set_color(self.config.color)
+        if primary is not None:
+            geometry = virtual_geometry()
+            self.logger.info(
+                "virtual desktop geometry=(%s,%s %sx%s) primary_geometry=(%s,%s %sx%s) dpr=%.3f",
+                geometry.x(),
+                geometry.y(),
+                geometry.width(),
+                geometry.height(),
+                primary.geometry().x(),
+                primary.geometry().y(),
+                primary.geometry().width(),
+                primary.geometry().height(),
+                primary.devicePixelRatio(),
+            )
 
     def run(self) -> int:
         self.logger.info("run starting")
+        self._install_signal_handlers()
         self.input_controller.start()
         self.connect(self.config)
+        self._signal_timer.start()
         return self.qt_app.exec()
+
+    def _install_signal_handlers(self) -> None:
+        def handle_sigint(signum: int, frame: object) -> None:
+            self.logger.info("received signal signum=%s, quitting application", signum)
+            self.qt_app.quit()
+
+        try:
+            signal.signal(signal.SIGINT, handle_sigint)
+        except ValueError:
+            self.logger.debug("unable to install SIGINT handler outside main thread")
+        else:
+            self.logger.info("installed SIGINT handler for terminal Ctrl+C")
 
     def is_connected(self) -> bool:
         return self.client is not None and self.client.is_connected
@@ -121,8 +158,9 @@ class CrossPingApp:
     def disconnect(self) -> None:
         self.logger.info("disconnect requested")
         if self.client is not None:
-            self.client.disconnect()
+            self.client.disconnect(wait=False)
             self.client = None
+        self.input_controller.refresh_enabled_state()
         self.window.set_connected(False)
 
     def apply_runtime_settings(self, config: AppConfig) -> None:
@@ -203,6 +241,7 @@ class CrossPingApp:
         if connected and self.client is None:
             return
         self.logger.info("connection changed connected=%s", connected)
+        self.input_controller.refresh_enabled_state()
         self.window.set_connected(connected)
 
     def _emit_draw_mode_changed(self, active: bool) -> None:
@@ -211,7 +250,7 @@ class CrossPingApp:
 
     def overlay_draw_mode_changed(self, active: bool) -> None:
         self.logger.debug("overlay draw mode active=%s", active)
-        self.overlay.set_draw_mode_active(active)
+        self.overlay.set_draw_mode_active(active, interactive=self.config.activation_mode == "ctrl_shift")
 
     def handle_message(self, message: dict[str, object]) -> None:
         sender_id = str(message.get("sender_id", ""))
@@ -270,9 +309,20 @@ class CrossPingApp:
     def shutdown(self) -> None:
         self.logger.info("shutdown")
         self.input_controller.stop()
+        self._clear_remote_sender_on_shutdown()
         self.disconnect()
         if self.tray_icon is not None:
             self.tray_icon.hide()
+
+    def _clear_remote_sender_on_shutdown(self) -> None:
+        if not self.is_connected() or self.client is None:
+            return
+        self.logger.info("publishing shutdown clear for sender=%s", self.config.sender_id)
+        self.clear_local_sender()
+        payload = ClearSenderMessage.build(self.config.sender_id).encode()
+        self.bridge.sent_payload.emit(payload)
+        self.handle_message_from_payload(payload)
+        self.client.publish(payload, wait=True)
 
     def show_settings(self) -> None:
         self.window.show_and_focus()

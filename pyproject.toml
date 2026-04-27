@@ -7,7 +7,7 @@ name = "crossping"
 version = "0.1.0"
 description = "Desktop MQTT drawing overlay for shared screen annotation."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
   { name = "CrossPing" }

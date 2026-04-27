@@ -45,6 +45,9 @@ WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
 WM_SYSKEYDOWN = 0x0104
 WM_SYSKEYUP = 0x0105
+VK_SHIFT = 0x10
+VK_CONTROL = 0x11
+VK_MENU = 0x12
 VK_1 = 0x31
 MAC_KEYCODE_1 = 18
 
@@ -76,6 +79,7 @@ class GlobalInputController:
         sender_id: str,
         screen_size_provider: Callable[[], Tuple[int, int]],
         pointer_position_provider: Callable[[], Tuple[int, int]],
+        input_enabled_provider: Callable[[], bool],
         publish: Callable[[str], None],
         on_local_clear: Callable[[], None],
         on_draw_mode_changed: Callable[[bool], None],
@@ -85,6 +89,7 @@ class GlobalInputController:
         self.sender_id = sender_id
         self.screen_size_provider = screen_size_provider
         self.pointer_position_provider = pointer_position_provider
+        self.input_enabled_provider = input_enabled_provider
         self.publish = publish
         self.on_local_clear = on_local_clear
         self.on_draw_mode_changed = on_draw_mode_changed
@@ -93,12 +98,15 @@ class GlobalInputController:
         self.activation_mode = activation_mode
         self.current_color = color_provider()
         self.ctrl_down = False
+        self.alt_down = False
         self.cmd_down = False
         self.shift_down = False
         self.keyboard_listener = None
         self.mouse_listener = None
         self._draw_mode_active = False
         self.active_stroke_id = None  # type: Optional[str]
+        self.ctrl_shift_left_down = False
+        self.ctrl_shift_press_position = None  # type: Optional[Tuple[int, int]]
         self.middle_button_down = False
         self.middle_press_position = None  # type: Optional[Tuple[int, int]]
         self.text_mode_active = False
@@ -106,10 +114,42 @@ class GlobalInputController:
         self.active_text_value = ""
         self._text_toggle_latched = False
 
+    def _current_pointer_position(self, fallback_x: int, fallback_y: int, context: str) -> Tuple[int, int]:
+        try:
+            pointer_x, pointer_y = self.pointer_position_provider()
+        except Exception as exc:
+            self.logger.debug(
+                "pointer provider failed context=%s fallback_x=%s fallback_y=%s error=%s",
+                context,
+                fallback_x,
+                fallback_y,
+                exc,
+            )
+            return fallback_x, fallback_y
+        if (pointer_x, pointer_y) != (fallback_x, fallback_y):
+            self.logger.debug(
+                "pointer coordinate mismatch context=%s hook=(%s,%s) provider=(%s,%s)",
+                context,
+                fallback_x,
+                fallback_y,
+                pointer_x,
+                pointer_y,
+            )
+        return pointer_x, pointer_y
+
     def set_activation_mode(self, activation_mode: str) -> None:
         self.logger.info("activation mode set to %s", activation_mode)
         self.activation_mode = activation_mode
         self._end_stroke_if_needed("activation mode change")
+        self._sync_draw_mode()
+
+    def refresh_enabled_state(self) -> None:
+        if not self.input_enabled_provider():
+            self.ctrl_shift_left_down = False
+            self.ctrl_shift_press_position = None
+            self.middle_button_down = False
+            self.middle_press_position = None
+            self._end_stroke_if_needed("input disabled")
         self._sync_draw_mode()
 
     def set_color(self, color: str) -> None:
@@ -149,6 +189,8 @@ class GlobalInputController:
             self.mouse_listener.stop()
 
     def _should_intercept(self) -> bool:
+        if not self.input_enabled_provider():
+            return False
         if self.text_mode_active:
             return False
         if self.activation_mode == "middle_click":
@@ -174,6 +216,8 @@ class GlobalInputController:
             return
         if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
             self.ctrl_down = True
+        if key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r):
+            self.alt_down = True
         if key in (keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r):
             self.cmd_down = True
         if key in (keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r):
@@ -192,6 +236,8 @@ class GlobalInputController:
             return
         if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
             self.ctrl_down = False
+        if key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r):
+            self.alt_down = False
         if key in (keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r):
             self.cmd_down = False
         if key in (keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r):
@@ -200,12 +246,24 @@ class GlobalInputController:
             self._text_toggle_latched = False
         self._sync_draw_mode()
         if not self._draw_mode_active:
+            self.ctrl_shift_left_down = False
+            self.ctrl_shift_press_position = None
             self._end_stroke_if_needed("modifier release")
 
     def _on_click(self, x: int, y: int, button: object, pressed: bool) -> None:
         if mouse is None:
             return
+        self.logger.debug(
+            "mouse click event activation_mode=%s button=%s pressed=%s hook=(%s,%s)",
+            self.activation_mode,
+            button,
+            pressed,
+            x,
+            y,
+        )
         if self.text_mode_active:
+            return
+        if not self.input_enabled_provider():
             return
         if button != mouse.Button.middle and self.activation_mode == "middle_click":
             return
@@ -218,21 +276,24 @@ class GlobalInputController:
         if mouse is None or not self._draw_mode_active:
             return
         if button == mouse.Button.left and pressed:
-            self.active_stroke_id = secrets.token_hex(8)
-            self.logger.info("global mouse press stroke_id=%s x=%s y=%s color=%s", self.active_stroke_id, x, y, self.current_color)
-            self.publish(
-                StrokeStartMessage.build(
-                    self.sender_id,
-                    self.active_stroke_id,
-                    color=self.current_color,
-                ).encode()
-            )
-            self._publish_point(x, y)
+            pointer_x, pointer_y = self._current_pointer_position(x, y, "ctrl_shift_press")
+            self.ctrl_shift_left_down = True
+            self.ctrl_shift_press_position = (pointer_x, pointer_y)
             return
-        if button == mouse.Button.left and not pressed and self.active_stroke_id is not None:
-            self.logger.info("global mouse release stroke_id=%s", self.active_stroke_id)
-            self.publish(StrokeEndMessage.build(self.sender_id, self.active_stroke_id).encode())
-            self.active_stroke_id = None
+        if button == mouse.Button.left and not pressed:
+            self.ctrl_shift_left_down = False
+            if self.active_stroke_id is not None:
+                self.logger.info("global mouse release stroke_id=%s", self.active_stroke_id)
+                self.publish(StrokeEndMessage.build(self.sender_id, self.active_stroke_id).encode())
+                self.active_stroke_id = None
+                self.ctrl_shift_press_position = None
+                return
+            if self.ctrl_shift_press_position is not None:
+                width, height = self.screen_size_provider()
+                nx, ny = normalize_point(self.ctrl_shift_press_position[0], self.ctrl_shift_press_position[1], width, height)
+                self.logger.info("ctrl_shift ping x=%.4f y=%.4f color=%s", nx, ny, self.current_color)
+                self.publish(PingMessage.build(self.sender_id, nx, ny, color=self.current_color).encode())
+                self.ctrl_shift_press_position = None
             return
         if button == mouse.Button.right and pressed:
             self.logger.info("global right click clear x=%s y=%s", x, y)
@@ -242,9 +303,12 @@ class GlobalInputController:
     def _handle_middle_click_mode(self, x: int, y: int, button: object, pressed: bool) -> None:
         if mouse is None or button != mouse.Button.middle:
             return
+        if not self.input_enabled_provider():
+            return
+        pointer_x, pointer_y = self._current_pointer_position(x, y, "middle_click")
         if pressed:
             self.middle_button_down = True
-            self.middle_press_position = (x, y)
+            self.middle_press_position = (pointer_x, pointer_y)
             self._sync_draw_mode()
         else:
             self.middle_button_down = False
@@ -256,7 +320,7 @@ class GlobalInputController:
             self.middle_press_position = None
             return
         if self._middle_clear_modifier_down() and pressed:
-            self.logger.info("middle click clear x=%s y=%s", x, y)
+            self.logger.info("middle click clear x=%s y=%s", pointer_x, pointer_y)
             self.on_local_clear()
             self.publish(ClearSenderMessage.build(self.sender_id).encode())
             self.middle_press_position = None
@@ -269,9 +333,25 @@ class GlobalInputController:
             self.middle_press_position = None
 
     def _on_move(self, x: int, y: int) -> None:
+        pointer_x, pointer_y = self._current_pointer_position(x, y, "move")
+        if not self.input_enabled_provider():
+            return
+        if self.activation_mode == "ctrl_shift" and self.ctrl_shift_left_down and self.active_stroke_id is None and self.ctrl_shift_press_position is not None:
+            start_x, start_y = self.ctrl_shift_press_position
+            if (pointer_x, pointer_y) != (start_x, start_y) and self._draw_mode_active:
+                self.active_stroke_id = secrets.token_hex(8)
+                self.logger.info("ctrl_shift draw press stroke_id=%s x=%s y=%s color=%s", self.active_stroke_id, start_x, start_y, self.current_color)
+                self.publish(
+                    StrokeStartMessage.build(
+                        self.sender_id,
+                        self.active_stroke_id,
+                        color=self.current_color,
+                    ).encode()
+                )
+                self._publish_point(start_x, start_y, context="ctrl_shift_draw_start")
         if self.activation_mode == "middle_click" and self.middle_button_down and self.active_stroke_id is None and self.middle_press_position is not None:
             start_x, start_y = self.middle_press_position
-            if (x, y) != (start_x, start_y):
+            if (pointer_x, pointer_y) != (start_x, start_y):
                 self.active_stroke_id = secrets.token_hex(8)
                 self.logger.info("middle draw press stroke_id=%s x=%s y=%s color=%s", self.active_stroke_id, start_x, start_y, self.current_color)
                 self.publish(
@@ -281,19 +361,29 @@ class GlobalInputController:
                         color=self.current_color,
                     ).encode()
                 )
-                self._publish_point(start_x, start_y)
+                self._publish_point(start_x, start_y, context="middle_draw_start")
         if self.text_mode_active:
             return
         if self.active_stroke_id is None:
             return
         if self.activation_mode == "ctrl_shift" and not self._draw_mode_active:
             return
-        self._publish_point(x, y)
+        self._publish_point(pointer_x, pointer_y, context="move")
 
-    def _publish_point(self, x: int, y: int) -> None:
+    def _publish_point(self, x: int, y: int, context: str) -> None:
         width, height = self.screen_size_provider()
         nx, ny = normalize_point(x, y, width, height)
-        self.logger.debug("global mouse point stroke_id=%s x=%.4f y=%.4f", self.active_stroke_id, nx, ny)
+        self.logger.debug(
+            "global mouse point context=%s stroke_id=%s raw=(%s,%s) normalized=(%.4f,%.4f) screen=(%s,%s)",
+            context,
+            self.active_stroke_id,
+            x,
+            y,
+            nx,
+            ny,
+            width,
+            height,
+        )
         self.publish(
             StrokePointMessage.build(
                 self.sender_id,
@@ -310,9 +400,15 @@ class GlobalInputController:
         self.logger.info("ending stroke from %s stroke_id=%s", reason, self.active_stroke_id)
         self.publish(StrokeEndMessage.build(self.sender_id, self.active_stroke_id).encode())
         self.active_stroke_id = None
+        if self.activation_mode == "ctrl_shift":
+            self.ctrl_shift_press_position = None
 
     def _text_toggle_modifier_active(self) -> bool:
-        return self.cmd_down if sys.platform == "darwin" else self.ctrl_down
+        if sys.platform == "darwin":
+            return self.cmd_down
+        if sys.platform.startswith("win"):
+            return self.alt_down
+        return self.ctrl_down
 
     def _middle_clear_modifier_down(self) -> bool:
         return self.cmd_down if sys.platform == "darwin" else self.ctrl_down
@@ -326,6 +422,9 @@ class GlobalInputController:
         return isinstance(key, keyboard.KeyCode) and key.char == "1"
 
     def _toggle_text_mode(self) -> None:
+        if not self.input_enabled_provider():
+            self.logger.info("ignored text mode toggle while input disabled")
+            return
         if self.text_mode_active:
             self.logger.info("text mode disabled text_id=%s", self.active_text_id)
             self._finish_text_mode()
@@ -371,6 +470,32 @@ class GlobalInputController:
             ).encode()
         )
 
+    def _handle_win32_text_key(self, vk_code: int) -> None:
+        if self.active_text_id is None:
+            return
+        if vk_code == 0x08:
+            self.active_text_value = self.active_text_value[:-1]
+        elif vk_code == 0x20:
+            self.active_text_value += " "
+        elif vk_code == 0x0D:
+            self.active_text_value += "\n"
+        elif 0x30 <= vk_code <= 0x39:
+            self.active_text_value += chr(vk_code)
+        elif 0x41 <= vk_code <= 0x5A:
+            char = chr(vk_code)
+            self.active_text_value += char if self.shift_down else char.lower()
+        else:
+            return
+        self.logger.info("text updated text_id=%s length=%s", self.active_text_id, len(self.active_text_value))
+        self.publish(
+            TextUpdateMessage.build(
+                self.sender_id,
+                self.active_text_id,
+                self.active_text_value,
+                color=self.current_color,
+            ).encode()
+        )
+
     def _darwin_mouse_intercept(self, event_type: int, event: object) -> object:
         if Quartz is None or self.activation_mode != "middle_click":
             return event
@@ -403,10 +528,30 @@ class GlobalInputController:
     def _win32_keyboard_filter(self, msg: int, data: object) -> Optional[bool]:
         if msg not in (WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP):
             return None
+        vk_code = getattr(data, "vkCode", None)
+        is_keydown = msg in (WM_KEYDOWN, WM_SYSKEYDOWN)
+        is_keyup = msg in (WM_KEYUP, WM_SYSKEYUP)
+        if vk_code == VK_CONTROL:
+            self.ctrl_down = is_keydown
+        elif vk_code == VK_SHIFT:
+            self.shift_down = is_keydown
+        if vk_code == VK_MENU:
+            self.alt_down = is_keydown
+        if vk_code == VK_1 and self._text_toggle_modifier_active():
+            if is_keydown:
+                if not self._text_toggle_latched:
+                    self._text_toggle_latched = True
+                    self._toggle_text_mode()
+            elif is_keyup:
+                self._text_toggle_latched = False
+            if self.keyboard_listener is not None:
+                self.keyboard_listener.suppress_event()
+                return False
+            return None
         suppress = False
         if self.text_mode_active:
-            suppress = True
-        elif getattr(data, "vkCode", None) == VK_1 and self._text_toggle_modifier_active():
+            if is_keydown and vk_code not in (VK_SHIFT, VK_CONTROL, VK_MENU):
+                self._handle_win32_text_key(vk_code)
             suppress = True
         if suppress and self.keyboard_listener is not None:
             self.keyboard_listener.suppress_event()
@@ -414,6 +559,24 @@ class GlobalInputController:
         return None
 
     def _win32_mouse_filter(self, msg: int, data: object) -> Optional[bool]:
+        self.logger.debug(
+            "win32 mouse filter msg=%s activation_mode=%s middle_down=%s active_stroke=%s",
+            hex(msg),
+            self.activation_mode,
+            self.middle_button_down,
+            self.active_stroke_id,
+        )
+        if self.activation_mode == "middle_click" and msg in (WM_MBUTTONDOWN, WM_MBUTTONUP):
+            point = getattr(data, "pt", None)
+            x = int(getattr(point, "x", 0))
+            y = int(getattr(point, "y", 0))
+            self.logger.debug(
+                "handling win32 middle button directly msg=%s x=%s y=%s",
+                hex(msg),
+                x,
+                y,
+            )
+            self._handle_middle_click_mode(x, y, mouse.Button.middle, msg == WM_MBUTTONDOWN)
         if not self._should_suppress_windows_message(msg):
             return None
         if self.mouse_listener is not None:
@@ -422,10 +585,8 @@ class GlobalInputController:
         return False
 
     def _should_suppress_windows_message(self, msg: int) -> bool:
+        if not sys.platform.startswith("win"):
+            return False
         if self.activation_mode != "middle_click":
             return False
-        if msg in (WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MBUTTONDBLCLK):
-            return True
-        if msg == WM_MOUSEMOVE and self.active_stroke_id is not None:
-            return True
-        return False
+        return msg in (WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MBUTTONDBLCLK)

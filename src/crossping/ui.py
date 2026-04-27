@@ -8,16 +8,16 @@ try:
 except ImportError:  # pragma: no cover
     QtCore = QtGui = QtWidgets = None
 
-from .config import AppConfig, COLOR_OPTIONS
+from .config import ACTIVATION_MODES, AppConfig, COLOR_OPTIONS
 
-ACTIVATION_MODE_OPTIONS = (
-    ("ctrl_shift", "Ctrl+Shift"),
-    ("middle_click", "Middle Click"),
-)
+ACTIVATION_MODE_OPTIONS = {
+    "middle_click": "Middle Click",
+    "ctrl_shift": "Ctrl+Shift",
+}
 
 ACTIVATION_MODE_HELP = {
-    "ctrl_shift": "Hold Ctrl+Shift to arm drawing. Left-drag draws. Right-click clears your strokes.",
-    "middle_click": "Middle-click and release pings. Middle-click and drag draws. Command+middle-click clears on macOS, and Ctrl+middle-click clears on Windows.",
+    "middle_click": "Controls: Middle-click and release pings. Middle-click and drag draws. Ctrl+middle-click clears on Windows.",
+    "ctrl_shift": "Controls: Hold Ctrl+Shift. Click to ping. Drag to draw. Right-click clears your drawings.",
 }
 
 
@@ -38,23 +38,23 @@ if QtWidgets is not None:
             self.port_input = QtWidgets.QSpinBox()
             self.port_input.setRange(1, 65535)
             self.port_input.setValue(config.broker_port)
+            self.client_name_label = QtWidgets.QLabel(f"Client Name: {config.sender_id}")
+            self.client_name_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
             self.activation_mode_input = QtWidgets.QComboBox()
-            for value, label in ACTIVATION_MODE_OPTIONS:
-                self.activation_mode_input.addItem(label, value)
-            current_index = self.activation_mode_input.findData(config.activation_mode)
-            self.activation_mode_input.setCurrentIndex(max(0, current_index))
-            self.activation_mode_help = QtWidgets.QLabel()
-            self.activation_mode_help.setWordWrap(True)
+            for value in ACTIVATION_MODES:
+                self.activation_mode_input.addItem(ACTIVATION_MODE_OPTIONS[value], value)
+            current_activation_index = self.activation_mode_input.findData(config.activation_mode)
+            self.activation_mode_input.setCurrentIndex(max(0, current_activation_index))
             self.activation_mode_input.currentIndexChanged.connect(self._update_activation_mode_help)
             self.activation_mode_input.currentIndexChanged.connect(self._emit_runtime_settings_change)
+            self.activation_mode_help = QtWidgets.QLabel()
+            self.activation_mode_help.setWordWrap(True)
             self.color_input = QtWidgets.QComboBox()
             for value, label in COLOR_OPTIONS:
                 self.color_input.addItem(label, value)
             current_color_index = self.color_input.findData(config.color)
             self.color_input.setCurrentIndex(max(0, current_color_index))
             self.color_input.currentIndexChanged.connect(self._emit_runtime_settings_change)
-            self.color_help = QtWidgets.QLabel("Your selected color is used for both strokes and ping ripples.")
-            self.color_help.setWordWrap(True)
             self.status_label = QtWidgets.QLabel("Disconnected")
             self.toggle_button = QtWidgets.QPushButton("Connect")
             self.toggle_button.clicked.connect(self._on_toggle)
@@ -80,9 +80,9 @@ if QtWidgets is not None:
             form.addRow("Color", self.color_input)
 
             layout = QtWidgets.QVBoxLayout(self)
+            layout.addWidget(self.client_name_label)
             layout.addLayout(form)
             layout.addWidget(self.activation_mode_help)
-            layout.addWidget(self.color_help)
             layout.addWidget(self.status_label)
             layout.addWidget(self.toggle_button)
             layout.addWidget(self.clear_all_button)
@@ -119,22 +119,26 @@ if QtWidgets is not None:
 
         def set_connected(self, connected: bool, status_text: Optional[str] = None) -> None:
             self.status_label.setText(status_text or ("Connected" if connected else "Disconnected"))
+            color = "#1f7a1f" if connected else "#b42318"
+            self.status_label.setStyleSheet(f"color: {color}; font-weight: 600;")
             self.toggle_button.setText("Disconnect" if connected else "Connect")
             self.toggle_button.setEnabled(True)
 
         def set_config(self, config: AppConfig) -> None:
             self._config = config
+            self.client_name_label.setText(f"Client Name: {config.sender_id}")
             self.room_input.setText(config.room_code)
             self.broker_input.setText(config.broker_host)
             self.port_input.setValue(config.broker_port)
-            index = self.activation_mode_input.findData(config.activation_mode)
-            self.activation_mode_input.setCurrentIndex(max(0, index))
+            activation_index = self.activation_mode_input.findData(config.activation_mode)
+            self.activation_mode_input.setCurrentIndex(max(0, activation_index))
             color_index = self.color_input.findData(config.color)
             self.color_input.setCurrentIndex(max(0, color_index))
             self._update_activation_mode_help()
 
         def set_connecting(self) -> None:
             self.status_label.setText("Connecting...")
+            self.status_label.setStyleSheet("color: #9a6700; font-weight: 600;")
             self.toggle_button.setText("Connect")
             self.toggle_button.setEnabled(False)
 
@@ -151,7 +155,7 @@ if QtWidgets is not None:
 
         def _update_activation_mode_help(self) -> None:
             activation_mode = str(self.activation_mode_input.currentData())
-            self.activation_mode_help.setText(ACTIVATION_MODE_HELP.get(activation_mode, ""))
+            self.activation_mode_help.setText(ACTIVATION_MODE_HELP[activation_mode])
 
         def _current_config(self) -> AppConfig:
             return replace(

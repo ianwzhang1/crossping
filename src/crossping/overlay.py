@@ -66,7 +66,7 @@ if QtWidgets is not None:
                 | QtCore.Qt.WindowType.WindowDoesNotAcceptFocus
             )
             screen = QtGui.QGuiApplication.primaryScreen()
-            geometry = screen.geometry() if screen is not None else QtCore.QRect(0, 0, 1920, 1080)
+            geometry = screen.virtualGeometry() if screen is not None else QtCore.QRect(0, 0, 1920, 1080)
             self.setGeometry(geometry)
             self.show()
             self._apply_native_window_configuration()
@@ -74,7 +74,14 @@ if QtWidgets is not None:
             self._animation_timer = QtCore.QTimer(self)
             self._animation_timer.setInterval(16)
             self._animation_timer.timeout.connect(self._tick_animation)
-            self.logger.info("overlay initialized size=%sx%s native_window=%s", self.width(), self.height(), bool(self._native_window))
+            self.logger.info(
+                "overlay initialized geometry=(%s,%s %sx%s) native_window=%s",
+                geometry.x(),
+                geometry.y(),
+                geometry.width(),
+                geometry.height(),
+                bool(self._native_window),
+            )
 
         def refresh(self) -> None:
             self.logger.debug("overlay refresh requested")
@@ -94,15 +101,21 @@ if QtWidgets is not None:
                 self._animation_timer.start()
             self.update()
 
-        def set_draw_mode_active(self, active: bool) -> None:
+        def set_draw_mode_active(self, active: bool, interactive: bool = True) -> None:
             if not active and self.active_stroke_id is not None:
                 self.on_stroke_end(self.active_stroke_id)
                 self.active_stroke_id = None
                 self.releaseMouse()
             self.draw_mode_active = active
-            self.logger.info("overlay draw mode active=%s", active)
-            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, not active)
-            self._set_native_mouse_passthrough(not active)
+            passthrough = (not active) or (not interactive)
+            self.logger.info(
+                "overlay draw mode active=%s interactive=%s passthrough=%s",
+                active,
+                interactive,
+                passthrough,
+            )
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, passthrough)
+            self._set_native_mouse_passthrough(passthrough)
             self.show()
             self._bring_to_front()
             self.update()
@@ -182,6 +195,13 @@ if QtWidgets is not None:
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
             width = max(1, self.width())
             height = max(1, self.height())
+            self.logger.debug(
+                "paint geometry widget=(%s,%s %sx%s)",
+                self.geometry().x(),
+                self.geometry().y(),
+                width,
+                height,
+            )
             if self.draw_mode_active:
                 painter.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 1))
             for stroke in self.store.all_strokes():
@@ -255,5 +275,5 @@ else:
         def refresh(self) -> None:
             return None
 
-        def set_draw_mode_active(self, active: bool) -> None:
+        def set_draw_mode_active(self, active: bool, interactive: bool = True) -> None:
             return None
