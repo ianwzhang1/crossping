@@ -27,7 +27,7 @@ jobs:
           PIPENV_VENV_IN_PROJECT: "1"
         run: |
           pipenv install --dev
-          pipenv run pip install -e ".[desktop]"
+          pipenv run pip install -e ".[desktop]" pefile
 
       - name: Run test suite
         env:
