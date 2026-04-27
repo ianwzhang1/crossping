@@ -1,0 +1,20 @@
+from crossping.state import StrokeStore
+
+
+def test_clear_logic_targets_only_selected_sender() -> None:
+    store = StrokeStore()
+    store.start_stroke("alice", "a1")
+    store.add_point("alice", "a1", 0.1, 0.2)
+    store.start_stroke("bob", "b1")
+    store.add_point("bob", "b1", 0.3, 0.4)
+
+    store.clear_sender("alice")
+
+    assert [stroke.sender_id for stroke in store.all_strokes()] == ["bob"]
+
+
+def test_add_point_creates_stroke_when_missing() -> None:
+    store = StrokeStore()
+    stroke = store.add_point("alice", "s1", 0.4, 0.5)
+    assert stroke is not None
+    assert stroke.points == [(0.4, 0.5)]
