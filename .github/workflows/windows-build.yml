@@ -6,6 +6,13 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -25,6 +32,8 @@ jobs:
         with:
           path: ~\AppData\Local\pip\Cache
           key: ${{ runner.os }}-pip-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('Pipfile.lock', 'pyproject.toml', '.github/workflows/windows-build.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ steps.setup-python.outputs.python-version }}-
 
       - name: Cache pipenv virtualenv
         id: cache-venv
@@ -32,6 +41,8 @@ jobs:
         with:
           path: .venv
           key: ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('Pipfile.lock', 'pyproject.toml', 'packaging/crossping.spec', '.github/workflows/windows-build.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-
 
       - name: Install pipenv
         run: python -m pip install --upgrade pip pipenv
@@ -57,9 +68,10 @@ jobs:
       - name: Smoke test packaged app startup
         shell: pwsh
         run: |
-          $exe = Resolve-Path "dist\CrossPing\CrossPing.exe"
+          $exe = Resolve-Path "dist\CrossPing.exe"
           $configDir = Join-Path $env:RUNNER_TEMP "crossping-config"
           New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+          $env:CROSSPING_CONFIG_DIR = $configDir
           $process = Start-Process -FilePath $exe -ArgumentList @() -PassThru -WorkingDirectory (Split-Path $exe)
           Start-Sleep -Seconds 8
           if ($process.HasExited) {
